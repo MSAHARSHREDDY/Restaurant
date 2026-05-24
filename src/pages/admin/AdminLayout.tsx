@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Outlet, Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import toast from 'react-hot-toast';
@@ -29,6 +29,42 @@ function formatTimeAgo(dateString: string) {
   return new Date(dateString).toLocaleDateString();
 }
 
+/**
+ * Synthesizes a high-fidelity electronic airfield cabin tone on-demand
+ * using the browser's built-in Web Audio API context.
+ */
+function playCabinChime() {
+  try {
+    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioContextClass) return;
+    const ctx = new AudioContextClass();
+    
+    const playTone = (frequency: number, startTime: number, duration: number) => {
+      const osc = ctx.createOscillator();
+      const gainNode = ctx.createGain();
+      
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(frequency, startTime);
+      
+      gainNode.gain.setValueAtTime(0.18, startTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
+      
+      osc.connect(gainNode);
+      gainNode.connect(ctx.destination);
+      
+      osc.start(startTime);
+      osc.stop(startTime + duration);
+    };
+
+    const now = ctx.currentTime;
+    // Elegant major third sequence: High chime (C#5 followed by A5)
+    playTone(554.37, now, 0.45); // C#5
+    playTone(880.00, now + 0.12, 0.65); // A5
+  } catch (err) {
+    console.warn("Chime generation blocked or not supported:", err);
+  }
+}
+
 export function AdminLayout() {
   const { user, token } = useAuth();
   const location = useLocation();
@@ -38,8 +74,10 @@ export function AdminLayout() {
   const [showNotifications, setShowNotifications] = useState(false);
   const [soundMuted, setSoundMuted] = useState(() => localStorage.getItem("admin_notif_muted") === "true");
 
-  // Load baseline history
-  const fetchNotifications = async () => {
+  const seenIdsRef = useRef<Set<string>>(new Set());
+
+  // Polling notifications engine
+  const fetchAndSyncNotifications = async (isFirstLoad = false) => {
     if (!token) return;
     try {
       const res = await fetch("/api/admin/notifications", {
@@ -47,70 +85,63 @@ export function AdminLayout() {
       });
       if (res.ok) {
         const data = await res.json();
+        
+        // If it isn't the first load, trigger announcements for any items not currently in seen IDs
+        if (!isFirstLoad && data.length > 0) {
+          const freshItems = data.filter((n: any) => !seenIdsRef.current.has(n._id));
+          if (freshItems.length > 0) {
+            freshItems.forEach((newNotif: any) => {
+              // Trigger UI Toast alert
+              toast.success(
+                <div className="flex flex-col gap-1 font-sans text-xs">
+                  <span className="font-bold text-white text-[11px] uppercase tracking-wide flex items-center gap-1.5">
+                    <span className="text-gold-500 font-mono animate-bounce">✈️</span> {newNotif.title}
+                  </span>
+                  <span className="text-gray-300">{newNotif.message}</span>
+                </div>,
+                {
+                  duration: 8000,
+                  position: "top-right",
+                  style: {
+                    background: "#18181b",
+                    color: "#fff",
+                    border: "1px solid rgba(245, 158, 11, 0.2)"
+                  }
+                }
+              );
+            });
+
+            // Trigger synthesized dual-announcement sound
+            if (!soundMuted) {
+              playCabinChime();
+            }
+          }
+        }
+
+        // Cache all retrieved notification IDs in seen Set
+        data.forEach((n: any) => seenIdsRef.current.add(n._id));
+
         setNotifications(data);
         setUnreadCount(data.filter((n: any) => !n.isRead).length);
       }
     } catch (err) {
-      console.error("Failed to load notifications history:", err);
+      console.error("Polled notifications sync failed:", err);
     }
   };
 
   useEffect(() => {
     if (!token) return;
 
-    fetchNotifications();
+    // Load initial history baseline immediately
+    fetchAndSyncNotifications(true);
 
-    // Spawn server-sent events
-    const tokenParam = encodeURIComponent(token);
-    const eventSource = new EventSource(`/api/admin/notifications/sse?token=${tokenParam}`);
-
-    eventSource.addEventListener("admin_notification", (event: any) => {
-      try {
-        const newNotif = JSON.parse(event.data);
-        
-        // Idempotent state updater
-        setNotifications(prev => {
-          if (prev.some(n => n._id === newNotif._id)) return prev;
-          return [newNotif, ...prev];
-        });
-        setUnreadCount(prev => prev + 1);
-
-        // Sound alert
-        if (!soundMuted) {
-          try {
-            const chime = new Audio("https://assets.mixkit.co/active_storage/sfx/2869/2869-84.wav"); // Cockpit chime
-            chime.volume = 0.35;
-            chime.play().catch(() => {});
-          } catch(e) {
-            console.warn("Chime blocked by policy:", e);
-          }
-        }
-
-        // Action toast
-        toast.success(
-          <div className="flex flex-col gap-1 font-sans text-xs">
-            <span className="font-bold text-white text-[11px] uppercase tracking-wide flex items-center gap-1.5">
-              <span className="text-gold-500 font-mono animate-bounce">✈️</span> {newNotif.title}
-            </span>
-            <span className="text-gray-300">{newNotif.message}</span>
-          </div>,
-          {
-            duration: 6000,
-            position: "top-right",
-            style: {
-              background: "#18181b",
-              color: "#fff",
-              border: "1px solid rgba(245, 158, 11, 0.2)"
-            }
-          }
-        );
-      } catch (err) {
-        console.error("Error receiving notification broadcast:", err);
-      }
-    });
+    // Client-side polling interval (runs every 6 seconds)
+    const activePoll = setInterval(() => {
+      fetchAndSyncNotifications(false);
+    }, 6000);
 
     return () => {
-      eventSource.close();
+      clearInterval(activePoll);
     };
   }, [token, soundMuted]);
 
