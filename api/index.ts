@@ -24,20 +24,28 @@ let cachedConnection: Promise<typeof mongoose> | null = null;
 let connectionError: string | null = null;
 
 const connectMongo = async () => {
-  if (mongoose.connection.readyState === 1) {
-    return;
+  // If already connected, we are good to go
+  if (mongoose.connection.readyState === 1 || mongoose.connection.readyState === 2) {
+    return mongoose.connection;
+  }
+
+  if (mongoose.connection.readyState === 0 || mongoose.connection.readyState === 3) {
+    cachedConnection = null;
   }
 
   const mongoUri = process.env.MONGODB_URI;
   if (!mongoUri || mongoUri === '*****') {
     connectionError = 'MONGODB_URI is not defined or is placeholder in environment variables';
     console.warn(connectionError);
-    return;
+    return null;
   }
 
   if (!cachedConnection) {
+    mongoose.set("strictQuery", false);
     cachedConnection = mongoose.connect(mongoUri, {
-      serverSelectionTimeoutMS: 4000, // 4-second selection timeout (default is 30s)
+      serverSelectionTimeoutMS: 15000, // 15 seconds to connect
+      socketTimeoutMS: 45000, 
+      maxPoolSize: 10,
     })
       .then((m) => {
         console.log('Connected to MongoDB via Vercel Serverless Function');
@@ -54,9 +62,12 @@ const connectMongo = async () => {
 
   try {
     await cachedConnection;
+    return mongoose.connection;
   } catch (err: any) {
+    cachedConnection = null; // Clear on error so next request can retry connections
     console.error('Failed to resolve cached MongoDB connection:', err);
     connectionError = `Failed to resolve DB connection: ${err.message}`;
+    return null; // Don't throw for serverless, let middleware handle
   }
 };
 
@@ -69,10 +80,13 @@ app.use(async (req, res, next) => {
 
   await connectMongo();
 
-  if (mongoose.connection.readyState !== 1) {
+  // state could be 1 (connected) or 2 (connecting) and still be fine if it connects soon, 
+  // but since we await the promise, it should be 1. 
+  // Allow readyState === 1 (connected) or 2 (connecting).
+  if (mongoose.connection.readyState !== 1 && mongoose.connection.readyState !== 2) {
     return res.status(503).json({
       error: 'Database Connection Offline',
-      message: connectionError || 'MongoDB is not connected. Please verify your MONGODB_URI environment variable on Vercel.',
+      message: connectionError || 'MongoDB is not connected. Please verify your MONGODB_URI environment variable.',
       readyState: mongoose.connection.readyState
     });
   }

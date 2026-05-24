@@ -43,9 +43,26 @@ async function startServer() {
   // Connect to MongoDB
   const mongoUri = process.env.MONGODB_URI;
   if (mongoUri && mongoUri !== "*****") {
-    mongoose.connect(mongoUri)
-      .then(() => console.log("Connected to MongoDB"))
-      .catch((err) => console.error("MongoDB connection error:", err));
+    // Event listeners to handle and track connection states
+    mongoose.connection.on("connected", () => {
+      console.log("MongoDB connection established successfully.");
+    });
+    mongoose.connection.on("error", (err) => {
+      console.error("MongoDB connection stream error:", err);
+    });
+    mongoose.connection.on("disconnected", () => {
+      console.warn("MongoDB link disconnected! Re-establishing connection...");
+    });
+    mongoose.connection.on("reconnected", () => {
+      console.log("MongoDB connection reconnected successfully.");
+    });
+
+    mongoose.connect(mongoUri, {
+      serverSelectionTimeoutMS: 10000, // wait up to 10 seconds for service selection
+      socketTimeoutMS: 45000,          // standard socket timeout
+    })
+      .then(() => console.log("Connected to MongoDB init"))
+      .catch((err) => console.error("MongoDB init connection error:", err));
   } else {
     console.warn("MongoDB URI not provided or is set to default '*****'. Database features will be unavailable.");
   }
