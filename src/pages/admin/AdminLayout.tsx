@@ -178,6 +178,19 @@ export function AdminLayout() {
     }
   };
 
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    // On mobile, scroll to the content area automatically when navigating, 
+    // with an offset to avoid being hidden behind the fixed main header.
+    if (window.innerWidth < 768 && contentRef.current) {
+      const yOffset = -96; // Adjust for the main top navigation padding (approx pt-24)
+      const element = contentRef.current;
+      const y = element.getBoundingClientRect().top + window.scrollY + yOffset;
+      window.scrollTo({ top: y, behavior: 'smooth' });
+    }
+  }, [location.pathname]);
+
   if (!user?.isAdmin) {
     return (
       <div className="w-full pt-32 pb-20 min-h-screen flex items-center justify-center">
@@ -333,7 +346,7 @@ export function AdminLayout() {
         </nav>
       </div>
       
-      <div className="flex-1 p-6 md:p-10 overflow-y-auto">
+      <div ref={contentRef} className="flex-1 p-6 md:p-10 overflow-y-auto">
         <Outlet />
       </div>
     </div>
